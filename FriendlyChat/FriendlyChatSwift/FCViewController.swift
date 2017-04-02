@@ -17,6 +17,7 @@
 import UIKit
 import Firebase
 import FirebaseAuthUI
+import FirebaseGoogleAuthUI
 
 // MARK: - FCViewController
 
@@ -33,8 +34,8 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     var keyboardOnScreen = false
     var placeholderImage = UIImage(named: "ic_account_circle")
     fileprivate var _refHandle: FIRDatabaseHandle!
-    fileprivate var _authHandle: FIRAuthStateDidChangeListenerHandle!
-    var user: FIRUser?
+    fileprivate var _authHandle: FIRAuthStateDidChangeListenerHandle! // gives the ability to specifiy what we want to happen when the auth state changes
+    var user: FIRUser? // represents the currently authenticated user
     var displayName = "Anonymous"
     
     // MARK: Outlets
@@ -53,7 +54,9 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     // MARK: Life Cycle
     
     override func viewDidLoad() {
-        self.signedInStatus(isSignedIn: true)
+//        self.signedInStatus(isSignedIn: true) // assumes the user successfully authenticates.
+        
+        configureAuth()
         
         // TODO: Handle what users see when view loads
     }
@@ -65,12 +68,50 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     
     // MARK: Config
     
-    func configureAuth() {
-        // TODO: configure firebase authentication
+    func configureAuth() { // configure firebase authentication
+        
+        let provider: [FUIAuthProvider] = [FUIGoogleAuth()]
+        FUIAuth.defaultAuthUI()?.providers = provider
+        
+        // listen for changes in the auth state
+        _authHandle = FIRAuth.auth()?.addStateDidChangeListener { (auth: FIRAuth, user: FIRUser?) in
+            // refresh table data
+            self.messages.removeAll(keepingCapacity: false)
+            self.messagesTable.reloadData()
+            
+            //check if there is a current user
+            if let activeUser = user {
+                //check if the current app user is the current FIRUser
+                if self.user != activeUser {
+                    self.user = activeUser
+                    self.signedInStatus(isSignedIn: true)
+                    let name = user!.email!.components(separatedBy: "@")[0]
+                    self.displayName = name
+                }
+            } else {
+                // user must sign in
+                self.signedInStatus(isSignedIn: false)
+                self.loginSession()
+            }
+        }
     }
     
     func configureDatabase() {
-        // TODO: configure database to sync messages
+        // reference or route to the database
+        ref = FIRDatabase.database().reference() // connects app to database.
+        
+        // creates a listener. covers us when the app first starts up and after the app has started running
+        // "messages" is the start of the path. next function is to listen for the .childAdded event.
+        // the closure is called whenever a child is added to messages.
+        _refHandle = ref.child("messages").observe(.childAdded, with: { (snapshot: FIRDataSnapshot) in
+            self.messages.append(snapshot)
+            // FIRDataSnapshot contains data for a single message.  Added to messages array.
+            self.messagesTable.insertRows(at: [IndexPath(row: self.messages.count - 1, section: 0)], with: .automatic)
+            // insert a row for the added message
+            self.scrollToBottomMessage()
+            // scroll to bottom of message
+        
+        })
     }
     
     func configureStorage() {
@@ -78,7 +119,9 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     }
     
     deinit {
-        // TODO: set up what needs to be deinitialized when view is no longer being used
+        // set up what needs to be deinitialized when view is no longer being used
+        ref.child("messages").removeObserver(withHandle: _refHandle)
+        FIRAuth.auth()?.removeStateDidChangeListener(_authHandle) // remove listenener when the listener is no longer needed. Unregisters listener so app stops listening to auth changes
     }
     
     // MARK: Remote Config
@@ -109,7 +152,7 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
             backgroundBlur.effect = nil
             messageTextField.delegate = self
             
-            // TODO: Set up app to send and receive messages when signed in
+            configureDatabase()
         }
     }
     
@@ -121,9 +164,12 @@ class FCViewController: UIViewController, UINavigationControllerDelegate {
     // MARK: Send Message
     
     func sendMessage(data: [String:String]) {
-        // TODO: create method that pushes message to the firebase database
+        var mdata = data // created a copy of our data
+        mdata[Constants.MessageFields.name] = displayName // creates a key:value pair (name:displayName)
+        // like specifying "/messages/[some_auto_id]"
+        ref.child("messages").childByAutoId().setValue(mdata) // writes the message to the database
     }
-    
+     
     func sendPhotoMessage(photoData: Data) {
         // TODO: create method that pushes message w/ photo to the firebase database
     }
@@ -201,8 +247,16 @@ extension FCViewController: UITableViewDelegate, UITableViewDataSource {
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         // dequeue cell
         let cell: UITableViewCell! = messagesTable.dequeueReusableCell(withIdentifier: "messageCell", for: indexPath)
+        
+        // unpack message from firebase data snapshot
+        let messageSnapshot: FIRDataSnapshot! = messages[indexPath.row] // selects the message from the associated row
+        let message = messageSnapshot.value as! [String:String] // creates key:value --> message:value
+        let name = message[Constants.MessageFields.name] ?? "[username]"
+        let text = message[Constants.MessageFields.text] ?? "[message]"
+        cell!.textLabel?.text = name + ": " + text
+        cell!.imageView?.image = self.placeholderImage
+        
         return cell!
-        // TODO: update cell to display message data
     }
     
     func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
